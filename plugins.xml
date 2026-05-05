@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plugins>
+  <pyqgis_plugin name="UTM to MUTM Converter" version="1.0.0">
+    <description>Converts shapefiles and GeoTIFFs from UTM to Modified UTM (Everest 1830) for Nepal survey work.</description>
+    <about>Offline conversion using 7-parameter Helmert or 3-parameter Molodensky datum shift. Supports vector and raster. Works entirely inside QGIS with no internet required.</about>
+    <version>1.0.0</version>
+    <qgis_minimum_version>3.16</qgis_minimum_version>
+    <homepage>https://github.com/youruser/mutm-converter</homepage>
+    <file_name>mutm_converter.zip</file_name>
+    <author_name>Your Name</author_name>
+    <download_url>https://github.com/youruser/mutm-converter/releases/download/v1.0.0/mutm_converter.zip</download_url>
+    <tracker>https://github.com/youruser/mutm-converter/issues</tracker>
+    <repository>https://github.com/youruser/mutm-converter</repository>
+    <tags>nepal,utm,mutm,everest,datum,reproject,survey</tags>
+    <category>Vector</category>
+    <experimental>False</experimental>
+    <deprecated>False</deprecated>
+    <server>False</server>
+  </pyqgis_plugin>
+</plugins>
