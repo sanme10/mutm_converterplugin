@@ -19,6 +19,33 @@ from qgis.core import (
 METHOD_OPTIONS = ["7param (Helmert, recommended)", "3param (Molodensky)"]
 
 
+def _ensure_fiona(feedback):
+    """
+    Try to import fiona. If missing, install via pip internal API
+    (avoids subprocess which QGIS intercepts on Windows).
+    """
+    try:
+        import fiona
+        return True
+    except ImportError:
+        pass
+
+    feedback.pushInfo("fiona not found — attempting automatic install…")
+    try:
+        from pip._internal.cli.main import main as pip_main
+        pip_main(["install", "fiona", "geopandas", "scipy", "--quiet"])
+    except Exception as e:
+        feedback.pushWarning(f"Auto-install failed: {e}")
+        return False
+
+    try:
+        import fiona
+        feedback.pushInfo("fiona installed successfully.")
+        return True
+    except ImportError:
+        return False
+
+
 class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
 
     INPUT  = "INPUT"
