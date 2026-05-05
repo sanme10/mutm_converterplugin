@@ -15,16 +15,10 @@ For raster: the same t1+t2 transformers are used to build a pixel
 import io, zipfile, tempfile, logging
 from pathlib import Path
 
-import numpy as np
-import rasterio
-from rasterio.transform import from_bounds
-from rasterio.crs import CRS as RioCRS
-from pyproj import CRS, Transformer
-from scipy.ndimage import map_coordinates
-
-# fiona is imported lazily inside convert_shapefile() only —
-# it is not needed for raster conversion and may not be installed
-# in all QGIS environments.
+# All third-party imports are lazy (inside each function) so that
+# converter.py loads cleanly even if some packages are missing in
+# the current Python environment. Only the relevant function will
+# fail with a clear ImportError if its dependency is absent.
 
 log = logging.getLogger(__name__)
 
@@ -42,7 +36,6 @@ MUTM_ZONES = {
 PARAM3         = dict(x=+293.17, y=+726.18, z=+245.36)
 PARAM7_TOWGS84 = "-124.3813,521.6700,764.5137,17.1488,-8.11536,11.1842,-2.1105"
 
-WGS84      = CRS.from_epsg(4326)
 CHUNK_SIZE = 300
 
 
@@ -61,20 +54,25 @@ def _mutm_proj4_str(zone: int, method: str) -> str:
     )
 
 
-def _build_transformers(src_crs: CRS, zone: int, method: str):
+def _build_transformers(src_crs, zone: int, method: str):
     """
     Build the exact same two pyproj Transformers used by vector conversion.
       t1: src_crs → WGS84
       t2: WGS84   → MUTM (Everest 1830, with datum shift)
     """
+    from pyproj import CRS, Transformer
+    wgs84    = CRS.from_epsg(4326)
     mutm_crs = CRS.from_proj4(_mutm_proj4_str(zone, method))
-    t1 = Transformer.from_crs(src_crs, WGS84,    always_xy=True)
-    t2 = Transformer.from_crs(WGS84,   mutm_crs, always_xy=True)
+    t1 = Transformer.from_crs(src_crs, wgs84,    always_xy=True)
+    t2 = Transformer.from_crs(wgs84,   mutm_crs, always_xy=True)
     return t1, t2
 
 
-def _detect_zone_from_bbox(left, bottom, right, top, src_crs: CRS) -> int:
-    t = Transformer.from_crs(src_crs, WGS84, always_xy=True)
+def _detect_zone_from_bbox(left, bottom, right, top, src_crs) -> int:
+    from pyproj import CRS, Transformer
+    import numpy as np
+    wgs84 = CRS.from_epsg(4326)
+    t = Transformer.from_crs(src_crs, wgs84, always_xy=True)
     lons, _ = t.transform(
         [left, right, left, right],
         [bottom, bottom, top, top]
@@ -89,12 +87,14 @@ def _detect_zone_from_bbox(left, bottom, right, top, src_crs: CRS) -> int:
     )
 
 
-def _extract_horizontal_crs(rio_crs: RioCRS) -> RioCRS:
+def _extract_horizontal_crs(rio_crs):
     """
     If rio_crs is a compound CRS (3D — horizontal + vertical datum),
     extract and return only the horizontal component.
     Same horizontal-only CRS is what the vector pipeline uses.
     """
+    from pyproj import CRS
+    from rasterio.crs import CRS as RioCRS
     wkt = rio_crs.to_wkt()
     if "COMPD_CS" not in wkt and "COMPOUND" not in wkt.upper():
         return rio_crs
@@ -111,7 +111,8 @@ def _extract_horizontal_crs(rio_crs: RioCRS) -> RioCRS:
 
 # ── FAST VECTORIZED GEOMETRY TRANSFORM (vector) ───────────────────────────────
 
-def _transform_geometry(geom: dict, t1: Transformer, t2: Transformer) -> dict:
+def _transform_geometry(geom: dict, t1, t2) -> dict:
+    import numpy as np
     gtype  = geom["type"]
     coords = geom["coordinates"]
 
@@ -146,8 +147,10 @@ def _transform_geometry(geom: dict, t1: Transformer, t2: Transformer) -> dict:
 # ── SHAPEFILE CONVERSION ──────────────────────────────────────────────────────
 
 def convert_shapefile(zip_bytes: bytes, method: str = "7param") -> tuple[bytes, dict]:
+    import numpy as np
     import fiona
     import fiona.crs
+    from pyproj import CRS, Transformer
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
 
@@ -251,6 +254,13 @@ def convert_raster(
     This is mathematically identical to the vector pipeline — same
     Transformers, same parameter application, same datum shift.
     """
+    import numpy as np
+    import rasterio
+    from rasterio.transform import from_bounds
+    from rasterio.crs import CRS as RioCRS
+    from pyproj import CRS, Transformer
+    from scipy.ndimage import map_coordinates
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
 
