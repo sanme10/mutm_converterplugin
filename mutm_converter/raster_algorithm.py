@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 
 from qgis.core import (
@@ -18,7 +17,7 @@ METHOD_OPTIONS = ["7param (Helmert, recommended)", "3param (Molodensky)"]
 def _ensure_rasterio(feedback):
     """
     Try to import rasterio. If missing, attempt a silent pip install
-    into the QGIS Python environment, then retry.
+    using pip's Python API (avoids subprocess which QGIS intercepts).
     Returns True if rasterio is available after this call.
     """
     try:
@@ -28,19 +27,17 @@ def _ensure_rasterio(feedback):
         pass
 
     feedback.pushInfo("rasterio not found — attempting automatic install…")
-    import subprocess
     try:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "rasterio", "scipy"],
-            capture_output=True, text=True, timeout=120,
-        )
+        from pip._internal.cli.main import main as pip_main
+        pip_main(["install", "rasterio", "scipy", "--quiet"])
     except Exception as e:
         feedback.pushWarning(f"Auto-install failed: {e}")
         return False
 
     try:
+        import importlib
         import rasterio
-        feedback.pushInfo("rasterio installed successfully.")
+        feedback.pushInfo("rasterio installed successfully. Please restart QGIS if issues persist.")
         return True
     except ImportError:
         return False
