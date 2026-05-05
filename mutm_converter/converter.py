@@ -260,6 +260,7 @@ def convert_raster(
     from rasterio.crs import CRS as RioCRS
     from pyproj import CRS, Transformer
     from scipy.ndimage import map_coordinates
+    wgs84 = CRS.from_epsg(4326)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
@@ -289,8 +290,8 @@ def convert_raster(
 
             # Inverse transformers for back-projection
             mutm_crs = CRS.from_proj4(_mutm_proj4_str(zone, method))
-            t2_inv   = Transformer.from_crs(mutm_crs, WGS84,    always_xy=True)
-            t1_inv   = Transformer.from_crs(WGS84,    src_crs,  always_xy=True)
+            t2_inv   = Transformer.from_crs(mutm_crs, wgs84,    always_xy=True)
+            t1_inv   = Transformer.from_crs(wgs84,    src_crs,  always_xy=True)
 
             # ── Compute output MUTM bounding box ──────────────────────────
             # Transform all 4 corners src → WGS84 → MUTM (same as vector)
