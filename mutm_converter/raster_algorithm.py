@@ -57,7 +57,7 @@ class RasterToMUTMAlgorithm(QgsProcessingAlgorithm):
                 self.METHOD,
                 "Datum shift method",
                 options=METHOD_OPTIONS,
-                defaultValue=0,
+                defaultValue=1,
             )
         )
         self.addParameter(

@@ -16,13 +16,15 @@ import io, zipfile, tempfile, logging
 from pathlib import Path
 
 import numpy as np
-import fiona
-import fiona.crs
 import rasterio
 from rasterio.transform import from_bounds
 from rasterio.crs import CRS as RioCRS
 from pyproj import CRS, Transformer
 from scipy.ndimage import map_coordinates
+
+# fiona is imported lazily inside convert_shapefile() only —
+# it is not needed for raster conversion and may not be installed
+# in all QGIS environments.
 
 log = logging.getLogger(__name__)
 
@@ -144,6 +146,8 @@ def _transform_geometry(geom: dict, t1: Transformer, t2: Transformer) -> dict:
 # ── SHAPEFILE CONVERSION ──────────────────────────────────────────────────────
 
 def convert_shapefile(zip_bytes: bytes, method: str = "7param") -> tuple[bytes, dict]:
+    import fiona
+    import fiona.crs
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
 

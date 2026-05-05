@@ -9,11 +9,10 @@ from qgis.core import (
     QgsProcessingParameterVectorLayer,
     QgsProcessingParameterEnum,
     QgsProcessingParameterFileDestination,
-    QgsProcessingParameterFile,
     QgsVectorLayer,
+    QgsVectorFileWriter,
+    QgsCoordinateTransformContext,
     QgsProject,
-    QgsMessageLog,
-    Qgis,
 )
 
 
@@ -62,7 +61,7 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
                 self.METHOD,
                 "Datum shift method",
                 options=METHOD_OPTIONS,
-                defaultValue=0,
+                defaultValue=1,
             )
         )
         self.addParameter(
@@ -70,11 +69,13 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
                 self.OUTPUT,
                 "Output ZIP file",
                 fileFilter="ZIP files (*.zip)",
+                optional=True,
+                defaultValue="TEMPORARY_OUTPUT",
             )
         )
 
     def processAlgorithm(self, parameters, context, feedback):
-        layer  = self.parameterAsVectorLayer(parameters, self.INPUT, context)
+        layer      = self.parameterAsVectorLayer(parameters, self.INPUT, context)
         method_idx = self.parameterAsEnum(parameters, self.METHOD, context)
         output_zip = self.parameterAsFileOutput(parameters, self.OUTPUT, context)
 
@@ -83,14 +84,14 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
         if layer is None:
             raise QgsProcessingException("No input layer provided.")
 
-        feedback.setProgressText("Exporting layer to shapefile ZIP…")
+        feedback.setProgressText("Exporting layer to shapefile…")
+        feedback.setProgress(5)
 
-        # Export the QGIS layer to a temporary shapefile ZIP in memory
         zip_bytes = self._layer_to_zip(layer, feedback)
 
         feedback.setProgressText(f"Running MUTM conversion ({method})…")
+        feedback.setProgress(20)
 
-        # Import your existing converter
         try:
             from .converter import convert_shapefile
         except ImportError as e:
@@ -110,21 +111,31 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
         except Exception as e:
             raise QgsProcessingException(f"Conversion failed: {e}")
 
-        feedback.setProgressText(
-            f"Writing output ZIP… zone=MUTM{info['zone']}, "
-            f"features={info['features']}"
-        )
+        feedback.setProgress(90)
+        feedback.setProgressText("Writing output ZIP…")
 
-        # Write the output ZIP
+        # Handle TEMPORARY_OUTPUT
+        if not output_zip or output_zip == "TEMPORARY_OUTPUT":
+            import tempfile as _tf
+            tmp_f = _tf.NamedTemporaryFile(
+                suffix=".zip", delete=False,
+                prefix=info["output_filename"].replace(".zip", "") + "_",
+            )
+            output_zip = tmp_f.name
+            tmp_f.close()
+
         with open(output_zip, "wb") as f:
             f.write(out_bytes)
 
-        # Load converted shapefile into QGIS
-        self._load_from_zip(out_bytes, info["output_filename"], context, feedback)
+        feedback.setProgress(95)
 
+        self._load_from_zip(out_bytes, info["output_filename"], feedback)
+
+        feedback.setProgress(100)
         feedback.pushInfo(
             f"Conversion complete → MUTM{info['zone']} "
-            f"({info['features']} features, method={info['method']})"
+            f"({info['features']} features, method={info['method']}, "
+            f"source CRS: {info['src_crs']})"
         )
 
         return {self.OUTPUT: output_zip}
@@ -132,23 +143,38 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
     # ── helpers ───────────────────────────────────────────────────────────────
 
     def _layer_to_zip(self, layer, feedback) -> bytes:
-        """Export a QGIS vector layer to an in-memory shapefile ZIP."""
-        import processing  # QGIS Processing module
-
+        """
+        Export a QGIS vector layer to an in-memory shapefile ZIP using
+        QgsVectorFileWriter. This correctly handles any source format
+        including /vsizip/ paths and |layername= sources.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            shp_path = str(tmp / f"{layer.name()}.shp")
 
-            result = processing.run(
-                "native:savefeatures",
-                {
-                    "INPUT":       layer,
-                    "OUTPUT":      shp_path,
-                    "LAYER_NAME":  layer.name(),
-                    "DATASOURCE_OPTIONS": "",
-                    "LAYER_OPTIONS": "",
-                },
+            # Build a clean filename — never derive from layer.source()
+            # which contains /vsizip/ prefixes and |layername= suffixes
+            stem = "".join(
+                c for c in layer.name() if c.isalnum() or c in "_-"
+            ) or "input"
+            shp_path = str(tmp / f"{stem}.shp")
+
+            options              = QgsVectorFileWriter.SaveVectorOptions()
+            options.driverName   = "ESRI Shapefile"
+            options.fileEncoding = "UTF-8"
+
+            error, msg, _, _ = QgsVectorFileWriter.writeAsVectorFormatV3(
+                layer,
+                shp_path,
+                QgsCoordinateTransformContext(),
+                options,
             )
+
+            if error != QgsVectorFileWriter.NoError:
+                raise QgsProcessingException(
+                    f"Failed to export layer to shapefile: {msg}"
+                )
+
+            feedback.pushInfo(f"Layer exported to temporary shapefile.")
 
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -157,9 +183,9 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
             buf.seek(0)
             return buf.read()
 
-    def _load_from_zip(self, zip_bytes, zip_filename, context, feedback):
-        """Extract shapefile from ZIP and add it to the QGIS project."""
-        stem = Path(zip_filename).stem  # e.g. "myfile_MUTM84"
+    def _load_from_zip(self, zip_bytes: bytes, zip_filename: str, feedback):
+        """Extract the converted shapefile from ZIP and add it to the canvas."""
+        stem = Path(zip_filename).stem
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
@@ -171,7 +197,10 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
                     QgsProject.instance().addMapLayer(vl)
                     feedback.pushInfo(f"Layer '{stem}' added to canvas.")
                 else:
-                    feedback.pushWarning("Output layer could not be loaded into canvas.")
+                    feedback.pushWarning(
+                        "Output layer could not be loaded into canvas — "
+                        "the ZIP was saved successfully."
+                    )
 
     def createInstance(self):
         return VectorToMUTMAlgorithm()
