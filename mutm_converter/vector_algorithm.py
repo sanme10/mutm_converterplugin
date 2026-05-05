@@ -23,16 +23,7 @@ def _ensure_fiona(feedback):
     """
     Try to import fiona. If missing, install via pip internal API
     (avoids subprocess which QGIS intercepts on Windows).
-    Clears sys.modules cache after install so the fresh package is
-    importable in the same session without restarting QGIS.
     """
-    import sys, importlib
-
-    def _clear_cache():
-        for mod in ["fiona", "fiona.crs", "fiona.ogrext", "geopandas", "pyproj", "numpy", "scipy"]:
-            sys.modules.pop(mod, None)
-        importlib.invalidate_caches()
-
     try:
         import fiona
         return True
@@ -40,8 +31,6 @@ def _ensure_fiona(feedback):
         pass
 
     feedback.pushInfo("fiona not found — attempting automatic install…")
-    _clear_cache()
-
     try:
         from pip._internal.cli.main import main as pip_main
         pip_main(["install", "fiona", "geopandas", "scipy", "--quiet"])
@@ -49,25 +38,11 @@ def _ensure_fiona(feedback):
         feedback.pushWarning(f"Auto-install failed: {e}")
         return False
 
-    # Refresh site-packages path so newly installed packages are found
-    import site
-    for path in site.getsitepackages():
-        if path not in sys.path:
-            sys.path.insert(0, path)
-
-    _clear_cache()
-
     try:
         import fiona
         feedback.pushInfo("fiona installed successfully.")
         return True
     except ImportError:
-        feedback.pushWarning(
-            "fiona installed but still not importable in this session.
-"
-            "Please restart QGIS and run the algorithm again — "
-            "it will work after restart."
-        )
         return False
 
 
@@ -143,20 +118,6 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
 
         feedback.setProgressText(f"Running MUTM conversion ({method})…")
         feedback.setProgress(20)
-
-        if not _ensure_fiona(feedback):
-            raise QgsProcessingException(
-                "fiona could not be installed automatically.
-
-"
-                "Please install manually:
-"
-                "  1. Open OSGeo4W Shell (Start Menu, run as Administrator)
-"
-                "  2. Run: pip install fiona geopandas scipy
-"
-                "  3. Restart QGIS and try again."
-            )
 
         try:
             from .converter import convert_shapefile
