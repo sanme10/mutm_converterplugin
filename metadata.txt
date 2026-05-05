@@ -1,0 +1,19 @@
+[general]
+name=UTM to MUTM Converter
+qgisMinimumVersion=3.16
+description=Converts shapefiles and GeoTIFFs from UTM (WGS84) to Modified UTM (Everest 1830) for Nepal survey work. Supports 3-parameter and 7-parameter Helmert datum shifts.
+version=1.0.0
+author=Your Name
+email=your@email.com
+
+about=This plugin provides two Processing algorithms — one for vector (shapefile) and one for raster (GeoTIFF) — that reproject data from any UTM/projected CRS to Nepal's Modified UTM system using the Everest 1830 ellipsoid. The conversion is geodetically identical to the online converter at your Render deployment.
+
+tracker=https://github.com/youruser/mutm-converter/issues
+repository=https://github.com/youruser/mutm-converter
+
+hasProcessingProvider=yes
+category=Vector
+icon=icon.png
+
+changelog=
+    1.0.0 - Initial release. Vector and raster conversion via Processing toolbox.

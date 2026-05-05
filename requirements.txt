@@ -1,0 +1,18 @@
+# Install these into QGIS's Python environment.
+#
+# On Windows (OSGeo4W shell — run as Administrator):
+#   pip install -r requirements.txt
+#
+# On Linux/macOS:
+#   pip3 install -r requirements.txt
+#
+# Most of these are already present in a standard QGIS installation.
+# Only scipy may need to be added manually.
+
+pyproj>=3.6
+fiona>=1.9
+geopandas>=0.14
+rasterio>=1.3
+shapely>=2.0
+numpy>=1.26
+scipy>=1.11
