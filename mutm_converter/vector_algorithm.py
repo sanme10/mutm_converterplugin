@@ -64,7 +64,7 @@ def _ensure_fiona(feedback):
     except ImportError:
         feedback.pushWarning(
             "fiona installed but still not importable in this session."
-"
+
             "Please restart QGIS and run the algorithm again — "
             "it will work after restart."
         )
