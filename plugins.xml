@@ -5,12 +5,12 @@
     <about>Offline conversion using 7-parameter Helmert or 3-parameter Molodensky datum shift. Supports vector and raster. Works entirely inside QGIS with no internet required.</about>
     <version>1.0.0</version>
     <qgis_minimum_version>3.16</qgis_minimum_version>
-    <homepage>https://github.com/sanme10/mutm-converter</homepage>
-    <file_name>mutm_converter.zip</file_name>
+    <homepage>https://github.com/sanme10/mutm_converterplugin</homepage>
+    <file_name>mutm_converterpluginplugin.zip</file_name>
     <author_name>Sandeep Gautam</author_name>
-    <download_url>https://github.com/sanme10/mutm_converter/releases/download/v1.0.0/mutm_converter.zip</download_url>
-    <tracker>https://github.com/sanme10/mutm-converter/issues</tracker>
-    <repository>https://github.com/sanme10/mutm-converter</repository>
+    <download_url>https://github.com/sanme10/mutm_converterplugin/releases/download/v1.0.0/mutm_converterplugin.zip</download_url>
+    <tracker>https://github.com/sanme10/mutm_converterplugin/issues</tracker>
+    <repository>https://github.com/sanme10/mutm_converterplugin</repository>
     <tags>nepal,utm,mutm,everest,datum,reproject,survey</tags>
     <category>Vector</category>
     <experimental>False</experimental>
