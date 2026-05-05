@@ -184,23 +184,29 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
             return buf.read()
 
     def _load_from_zip(self, zip_bytes: bytes, zip_filename: str, feedback):
-        """Extract the converted shapefile from ZIP and add it to the canvas."""
-        stem = Path(zip_filename).stem
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-                zf.extractall(tmp)
-            shp_files = list(tmp.glob("*.shp"))
-            if shp_files:
-                vl = QgsVectorLayer(str(shp_files[0]), stem, "ogr")
-                if vl.isValid():
-                    QgsProject.instance().addMapLayer(vl)
-                    feedback.pushInfo(f"Layer '{stem}' added to canvas.")
-                else:
-                    feedback.pushWarning(
-                        "Output layer could not be loaded into canvas — "
-                        "the ZIP was saved successfully."
-                    )
+        """
+        Extract the converted shapefile to a persistent temp directory and
+        load it into the canvas. The directory is NOT deleted automatically —
+        on Windows, QGIS holds shapefile component files open (via OGR) after
+        addMapLayer(), so TemporaryDirectory.__exit__ raises PermissionError.
+        We use mkdtemp() and let the OS clean it up on reboot instead.
+        """
+        import tempfile as _tf
+        stem    = Path(zip_filename).stem
+        out_dir = Path(_tf.mkdtemp(prefix="mutm_"))
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            zf.extractall(out_dir)
+        shp_files = list(out_dir.glob("*.shp"))
+        if shp_files:
+            vl = QgsVectorLayer(str(shp_files[0]), stem, "ogr")
+            if vl.isValid():
+                QgsProject.instance().addMapLayer(vl)
+                feedback.pushInfo(f"Layer '{stem}' added to canvas.")
+            else:
+                feedback.pushWarning(
+                    "Output layer could not be loaded into canvas — "
+                    "the ZIP was saved successfully."
+                )
 
     def createInstance(self):
         return VectorToMUTMAlgorithm()
