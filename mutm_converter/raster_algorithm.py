@@ -64,8 +64,7 @@ def _ensure_rasterio(feedback):
         return True
     except ImportError:
         feedback.pushWarning(
-            "rasterio installed but cannot be imported yet.
-"
+            "rasterio installed but cannot be imported yet."
             "Please restart QGIS — the algorithm will work after restart."
         )
         return False

@@ -77,8 +77,7 @@ def _ensure_fiona(feedback):
         return True
     except ImportError:
         feedback.pushWarning(
-            "fiona installed but cannot be imported yet.
-"
+            "fiona installed but cannot be imported yet."
             "Please restart QGIS — the algorithm will work after restart."
         )
         return False
@@ -159,15 +158,10 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
 
         if not _ensure_fiona(feedback):
             raise QgsProcessingException(
-                "fiona could not be installed automatically.
-
-"
-                "Please install manually:
-"
-                "  1. Open OSGeo4W Shell (Start Menu, run as Administrator)
-"
-                "  2. Run: pip install fiona geopandas scipy
-"
+                "fiona could not be installed automatically."
+                "Please install manually:"
+                "  1. Open OSGeo4W Shell (Start Menu, run as Administrator)"
+                "  2. Run: pip install fiona geopandas scipy"
                 "  3. Restart QGIS and try again."
             )
 
