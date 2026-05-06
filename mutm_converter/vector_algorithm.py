@@ -156,15 +156,6 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
         feedback.setProgressText(f"Running MUTM conversion ({method})…")
         feedback.setProgress(20)
 
-        if not _ensure_fiona(feedback):
-            raise QgsProcessingException(
-                "fiona could not be installed automatically."
-                "Please install manually:"
-                "  1. Open OSGeo4W Shell (Start Menu, run as Administrator)"
-                "  2. Run: pip install fiona geopandas scipy"
-                "  3. Restart QGIS and try again."
-            )
-
         try:
             from .converter import convert_shapefile
         except ImportError as e:
