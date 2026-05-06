@@ -19,70 +19,6 @@ from qgis.core import (
 METHOD_OPTIONS = ["7param (Helmert, recommended)", "3param (Molodensky)"]
 
 
-def _ensure_fiona(feedback):
-    """
-    Try to import fiona. If missing, install via pip internal API.
-    IMPORTANT: never touch pyproj or numpy in sys.modules — QGIS owns
-    those and reloading them causes a PROJ dll conflict and hard crash.
-    Only clear fiona/geopandas/scipy which are safe to reinstall.
-    """
-    import sys, importlib, site
-
-    # Safe modules to clear — never include pyproj, numpy, gdal
-    SAFE_TO_CLEAR = ["fiona", "fiona.crs", "fiona.ogrext",
-                     "geopandas", "geopandas.array", "scipy"]
-
-    def _clear_fiona_cache():
-        for mod in list(sys.modules.keys()):
-            if any(mod == s or mod.startswith(s + ".") for s in SAFE_TO_CLEAR):
-                sys.modules.pop(mod, None)
-        importlib.invalidate_caches()
-
-    def _refresh_path():
-        try:
-            for path in site.getsitepackages():
-                if path not in sys.path:
-                    sys.path.insert(0, path)
-        except Exception:
-            pass
-
-    try:
-        import fiona
-        return True
-    except ImportError:
-        pass
-
-    feedback.pushInfo("fiona not found — attempting automatic install…")
-    _clear_fiona_cache()
-    _refresh_path()
-
-    try:
-        from pip._internal.cli.main import main as pip_main
-        # Do NOT reinstall pyproj — QGIS ships its own version linked to its PROJ dll
-        pip_main(["install", "fiona", "geopandas", "scipy",
-                  "--quiet", "--no-deps"])
-        # Install deps separately, excluding pyproj/numpy which QGIS owns
-        pip_main(["install", "click", "attrs", "certifi", "click-plugins",
-                  "cligj", "shapely", "--quiet"])
-    except Exception as e:
-        feedback.pushWarning(f"Auto-install failed: {e}")
-        return False
-
-    _refresh_path()
-    _clear_fiona_cache()
-
-    try:
-        import fiona
-        feedback.pushInfo("fiona installed successfully.")
-        return True
-    except ImportError:
-        feedback.pushWarning(
-            "fiona installed but cannot be imported yet."
-            "Please restart QGIS — the algorithm will work after restart."
-        )
-        return False
-
-
 class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
 
     INPUT  = "INPUT"
@@ -110,7 +46,8 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
             "Method:\n"
             "  7-param — full Helmert transform (recommended)\n"
             "  3-param — translation only (Molodensky)\n\n"
-            "The converted layer is automatically added to the QGIS canvas."
+            "The converted layer is automatically added to the QGIS canvas.\n\n"
+            "No extra installation required — uses QGIS built-in libraries."
         )
 
     def initAlgorithm(self, config=None):
@@ -158,12 +95,8 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
 
         try:
             from .converter import convert_shapefile
-        except ImportError as e:
-            raise QgsProcessingException(
-                f"Could not import converter.py: {e}\n"
-                "Make sure pyproj, fiona, geopandas, and scipy are installed "
-                "in your QGIS Python environment."
-            )
+        except Exception as e:
+            raise QgsProcessingException(f"Could not load converter: {e}")
 
         if feedback.isCanceled():
             return {}
@@ -178,7 +111,6 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
         feedback.setProgress(90)
         feedback.setProgressText("Writing output ZIP…")
 
-        # Handle TEMPORARY_OUTPUT
         if not output_zip or output_zip == "TEMPORARY_OUTPUT":
             import tempfile as _tf
             tmp_f = _tf.NamedTemporaryFile(
@@ -192,10 +124,9 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
             f.write(out_bytes)
 
         feedback.setProgress(95)
-
         self._load_from_zip(out_bytes, info["output_filename"], feedback)
-
         feedback.setProgress(100)
+
         feedback.pushInfo(
             f"Conversion complete → MUTM{info['zone']} "
             f"({info['features']} features, method={info['method']}, "
@@ -209,14 +140,11 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
     def _layer_to_zip(self, layer, feedback) -> bytes:
         """
         Export a QGIS vector layer to an in-memory shapefile ZIP using
-        QgsVectorFileWriter. This correctly handles any source format
-        including /vsizip/ paths and |layername= sources.
+        QgsVectorFileWriter. Handles any source format including
+        /vsizip/ paths and |layername= sources correctly.
         """
         with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-
-            # Build a clean filename — never derive from layer.source()
-            # which contains /vsizip/ prefixes and |layername= suffixes
+            tmp  = Path(tmp)
             stem = "".join(
                 c for c in layer.name() if c.isalnum() or c in "_-"
             ) or "input"
@@ -238,7 +166,7 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
                     f"Failed to export layer to shapefile: {msg}"
                 )
 
-            feedback.pushInfo(f"Layer exported to temporary shapefile.")
+            feedback.pushInfo("Layer exported to temporary shapefile.")
 
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -249,11 +177,10 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
 
     def _load_from_zip(self, zip_bytes: bytes, zip_filename: str, feedback):
         """
-        Extract the converted shapefile to a persistent temp directory and
-        load it into the canvas. The directory is NOT deleted automatically —
-        on Windows, QGIS holds shapefile component files open (via OGR) after
-        addMapLayer(), so TemporaryDirectory.__exit__ raises PermissionError.
-        We use mkdtemp() and let the OS clean it up on reboot instead.
+        Extract converted shapefile to a persistent temp dir and load into
+        canvas. Uses mkdtemp() instead of TemporaryDirectory() because on
+        Windows, QGIS holds shapefile files open after addMapLayer() and
+        TemporaryDirectory cleanup raises PermissionError.
         """
         import tempfile as _tf
         stem    = Path(zip_filename).stem

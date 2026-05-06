@@ -14,62 +14,6 @@ from qgis.core import (
 METHOD_OPTIONS = ["7param (Helmert, recommended)", "3param (Molodensky)"]
 
 
-def _ensure_rasterio(feedback):
-    """
-    Try to import rasterio. If missing, install via pip internal API.
-    IMPORTANT: never touch pyproj or numpy in sys.modules — QGIS owns
-    those and reloading them causes a PROJ dll conflict and hard crash.
-    """
-    import sys, importlib, site
-
-    SAFE_TO_CLEAR = ["rasterio", "scipy"]
-
-    def _clear_cache():
-        for mod in list(sys.modules.keys()):
-            if any(mod == s or mod.startswith(s + ".") for s in SAFE_TO_CLEAR):
-                sys.modules.pop(mod, None)
-        importlib.invalidate_caches()
-
-    def _refresh_path():
-        try:
-            for path in site.getsitepackages():
-                if path not in sys.path:
-                    sys.path.insert(0, path)
-        except Exception:
-            pass
-
-    try:
-        import rasterio
-        return True
-    except ImportError:
-        pass
-
-    feedback.pushInfo("rasterio not found — attempting automatic install…")
-    _clear_cache()
-    _refresh_path()
-
-    try:
-        from pip._internal.cli.main import main as pip_main
-        pip_main(["install", "rasterio", "scipy", "--quiet"])
-    except Exception as e:
-        feedback.pushWarning(f"Auto-install failed: {e}")
-        return False
-
-    _refresh_path()
-    _clear_cache()
-
-    try:
-        import rasterio
-        feedback.pushInfo("rasterio installed successfully.")
-        return True
-    except ImportError:
-        feedback.pushWarning(
-            "rasterio installed but cannot be imported yet."
-            "Please restart QGIS — the algorithm will work after restart."
-        )
-        return False
-
-
 class RasterToMUTMAlgorithm(QgsProcessingAlgorithm):
 
     INPUT  = "INPUT"
@@ -99,10 +43,7 @@ class RasterToMUTMAlgorithm(QgsProcessingAlgorithm):
             "  3-param — translation only (Molodensky)\n\n"
             "Pixel size is preserved exactly (e.g. 1×1 m stays 1×1 m).\n"
             "The converted raster is automatically added to the QGIS canvas.\n\n"
-            "Requires: rasterio, scipy.\n"
-            "If missing, the algorithm will attempt to install them automatically.\n"
-            "If auto-install fails, open OSGeo4W Shell and run:\n"
-            "    pip install rasterio scipy"
+            "No extra installation required — uses QGIS built-in libraries."
         )
 
     def initAlgorithm(self, config=None):
@@ -146,16 +87,6 @@ class RasterToMUTMAlgorithm(QgsProcessingAlgorithm):
                 f"Input must be a GeoTIFF file (.tif / .tiff). Got: {src_path}"
             )
 
-        # ── Check / install rasterio ──────────────────────────────────────────
-        if not _ensure_rasterio(feedback):
-            raise QgsProcessingException(
-                "rasterio is not installed and automatic install failed.\n\n"
-                "Please install it manually:\n"
-                "  1. Open OSGeo4W Shell (search in Start Menu, run as Administrator)\n"
-                "  2. Run: pip install rasterio scipy\n"
-                "  3. Restart QGIS and try again."
-            )
-
         feedback.setProgressText("Reading raster file…")
         feedback.setProgress(5)
 
@@ -168,8 +99,8 @@ class RasterToMUTMAlgorithm(QgsProcessingAlgorithm):
 
         try:
             from .converter import convert_raster
-        except ImportError as e:
-            raise QgsProcessingException(f"Could not import converter.py: {e}")
+        except Exception as e:
+            raise QgsProcessingException(f"Could not load converter: {e}")
 
         if feedback.isCanceled():
             return {}
@@ -184,7 +115,6 @@ class RasterToMUTMAlgorithm(QgsProcessingAlgorithm):
         feedback.setProgress(90)
         feedback.setProgressText("Writing output GeoTIFF…")
 
-        # Handle TEMPORARY_OUTPUT
         if not output_tif or output_tif == "TEMPORARY_OUTPUT":
             import tempfile as _tf
             tmp_f = _tf.NamedTemporaryFile(
@@ -197,7 +127,6 @@ class RasterToMUTMAlgorithm(QgsProcessingAlgorithm):
         with open(output_tif, "wb") as f:
             f.write(out_bytes)
 
-        # Load into canvas
         stem = Path(info["output_filename"]).stem
         rl   = QgsRasterLayer(output_tif, stem)
         if rl.isValid():
