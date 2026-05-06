@@ -21,17 +21,30 @@ METHOD_OPTIONS = ["7param (Helmert, recommended)", "3param (Molodensky)"]
 
 def _ensure_fiona(feedback):
     """
-    Try to import fiona. If missing, install via pip internal API
-    (avoids subprocess which QGIS intercepts on Windows).
-    Clears sys.modules cache after install so the fresh package is
-    importable in the same session without restarting QGIS.
+    Try to import fiona. If missing, install via pip internal API.
+    IMPORTANT: never touch pyproj or numpy in sys.modules — QGIS owns
+    those and reloading them causes a PROJ dll conflict and hard crash.
+    Only clear fiona/geopandas/scipy which are safe to reinstall.
     """
-    import sys, importlib
+    import sys, importlib, site
 
-    def _clear_cache():
-        for mod in ["fiona", "fiona.crs", "fiona.ogrext", "geopandas", "pyproj", "numpy", "scipy"]:
-            sys.modules.pop(mod, None)
+    # Safe modules to clear — never include pyproj, numpy, gdal
+    SAFE_TO_CLEAR = ["fiona", "fiona.crs", "fiona.ogrext",
+                     "geopandas", "geopandas.array", "scipy"]
+
+    def _clear_fiona_cache():
+        for mod in list(sys.modules.keys()):
+            if any(mod == s or mod.startswith(s + ".") for s in SAFE_TO_CLEAR):
+                sys.modules.pop(mod, None)
         importlib.invalidate_caches()
+
+    def _refresh_path():
+        try:
+            for path in site.getsitepackages():
+                if path not in sys.path:
+                    sys.path.insert(0, path)
+        except Exception:
+            pass
 
     try:
         import fiona
@@ -40,22 +53,23 @@ def _ensure_fiona(feedback):
         pass
 
     feedback.pushInfo("fiona not found — attempting automatic install…")
-    _clear_cache()
+    _clear_fiona_cache()
+    _refresh_path()
 
     try:
         from pip._internal.cli.main import main as pip_main
-        pip_main(["install", "fiona", "geopandas", "scipy", "--quiet"])
+        # Do NOT reinstall pyproj — QGIS ships its own version linked to its PROJ dll
+        pip_main(["install", "fiona", "geopandas", "scipy",
+                  "--quiet", "--no-deps"])
+        # Install deps separately, excluding pyproj/numpy which QGIS owns
+        pip_main(["install", "click", "attrs", "certifi", "click-plugins",
+                  "cligj", "shapely", "--quiet"])
     except Exception as e:
         feedback.pushWarning(f"Auto-install failed: {e}")
         return False
 
-    # Refresh site-packages path so newly installed packages are found
-    import site
-    for path in site.getsitepackages():
-        if path not in sys.path:
-            sys.path.insert(0, path)
-
-    _clear_cache()
+    _refresh_path()
+    _clear_fiona_cache()
 
     try:
         import fiona
@@ -63,7 +77,9 @@ def _ensure_fiona(feedback):
         return True
     except ImportError:
         feedback.pushWarning(
-            "fiona installed but still not importable in this session. Please restart QGIS and run the algorithm again,it will work after restart."
+            "fiona installed but cannot be imported yet.
+"
+            "Please restart QGIS — the algorithm will work after restart."
         )
         return False
 
@@ -143,10 +159,15 @@ class VectorToMUTMAlgorithm(QgsProcessingAlgorithm):
 
         if not _ensure_fiona(feedback):
             raise QgsProcessingException(
-                "fiona could not be installed automatically."
-                "Please install manually:"
-                "  1. Open OSGeo4W Shell (Start Menu, run as Administrator)"
-                "  2. Run: pip install fiona geopandas scipy"
+                "fiona could not be installed automatically.
+
+"
+                "Please install manually:
+"
+                "  1. Open OSGeo4W Shell (Start Menu, run as Administrator)
+"
+                "  2. Run: pip install fiona geopandas scipy
+"
                 "  3. Restart QGIS and try again."
             )
 
