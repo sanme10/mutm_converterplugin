@@ -1,16 +1,12 @@
 """
 converter.py — Geodetically correct UTM → MUTM conversion
 
-Both vector and raster use IDENTICAL transformation logic:
-  t1 = Transformer(src_crs → WGS84,    always_xy=True)
-  t2 = Transformer(WGS84   → MUTM_CRS, always_xy=True)
-
-Uses ONLY osgeo.gdal / osgeo.ogr / pyproj / numpy / scipy —
-all bundled with QGIS and sharing the same PROJ dll.
-No rasterio. No fiona. Eliminates the dll conflict crash.
+Uses ONLY osgeo.gdal / osgeo.ogr / osgeo.osr / numpy / scipy.
+Zero pyproj. All CRS operations go through osr which shares
+QGIS's internal PROJ runtime — no dll conflicts possible.
 """
 
-import io, zipfile, tempfile, logging
+import io, zipfile, tempfile, logging, json
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -30,7 +26,7 @@ PARAM3         = dict(x=+293.17, y=+726.18, z=+245.36)
 PARAM7_TOWGS84 = "-124.3813,521.6700,764.5137,17.1488,-8.11536,11.1842,-2.1105"
 
 
-# ── CRS HELPERS ───────────────────────────────────────────────────────────────
+# ── CRS / PROJ HELPERS (osr only) ────────────────────────────────────────────
 
 def _mutm_proj4_str(zone: int, method: str) -> str:
     towgs84 = (
@@ -45,24 +41,65 @@ def _mutm_proj4_str(zone: int, method: str) -> str:
     )
 
 
-def _build_transformers(src_crs, zone: int, method: str):
-    from pyproj import CRS, Transformer
-    wgs84    = CRS.from_epsg(4326)
-    mutm_crs = CRS.from_proj4(_mutm_proj4_str(zone, method))
-    t1 = Transformer.from_crs(src_crs, wgs84,    always_xy=True)
-    t2 = Transformer.from_crs(wgs84,   mutm_crs, always_xy=True)
-    return t1, t2
+def _make_wgs84():
+    """Return an osr.SpatialReference for WGS84."""
+    from osgeo import osr
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(4326)
+    srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    return srs
 
 
-def _detect_zone_from_bbox(left, bottom, right, top, src_crs) -> int:
-    from pyproj import CRS, Transformer
+def _make_mutm(zone: int, method: str):
+    """Return an osr.SpatialReference for the MUTM zone."""
+    from osgeo import osr
+    srs = osr.SpatialReference()
+    srs.ImportFromProj4(_mutm_proj4_str(zone, method))
+    srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    return srs
+
+
+def _make_src_srs(wkt: str):
+    """
+    Build an osr.SpatialReference from WKT.
+    If compound (3D), extract the horizontal component only.
+    """
+    from osgeo import osr
+    srs = osr.SpatialReference()
+    srs.ImportFromWkt(wkt)
+    srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+    # Strip vertical component from compound CRS
+    if srs.IsCompound():
+        horiz_wkt = srs.GetAttrValue("PROJCS") or srs.GetAttrValue("GEOGCS")
+        if horiz_wkt:
+            h = osr.SpatialReference()
+            h.ImportFromWkt(srs.ExportToWkt())
+            # Use StripVertical if available (GDAL >= 3.4)
+            if hasattr(h, 'StripVertical'):
+                h.StripVertical()
+            srs = h
+    return srs
+
+
+def _build_ct(src_srs, dst_srs):
+    """Build an osr.CoordinateTransformation."""
+    from osgeo import osr
+    ct = osr.CoordinateTransformation(src_srs, dst_srs)
+    return ct
+
+
+def _detect_zone(src_srs, left, bottom, right, top) -> int:
+    """Detect MUTM zone from bounding box by transforming corners to WGS84."""
     import numpy as np
-    wgs84 = CRS.from_epsg(4326)
-    t = Transformer.from_crs(src_crs, wgs84, always_xy=True)
-    lons, _ = t.transform(
-        [left, right, left, right],
-        [bottom, bottom, top, top]
-    )
+    wgs84 = _make_wgs84()
+    ct    = _build_ct(src_srs, wgs84)
+
+    corners = [(left, bottom), (right, bottom), (left, top), (right, top)]
+    lons = []
+    for x, y in corners:
+        lon, lat, _ = ct.TransformPoint(x, y)
+        lons.append(lon)
+
     lon = float(np.mean(lons))
     for zone, (lo, hi) in MUTM_ZONES.items():
         if lo <= lon < hi:
@@ -73,25 +110,32 @@ def _detect_zone_from_bbox(left, bottom, right, top, src_crs) -> int:
     )
 
 
-# ── FAST VECTORIZED GEOMETRY TRANSFORM ───────────────────────────────────────
+# ── GEOMETRY TRANSFORM ────────────────────────────────────────────────────────
 
-def _transform_geometry(geom_dict: dict, t1, t2) -> dict:
+def _transform_geometry(geom_dict: dict, ct1, ct2) -> dict:
+    """
+    Transform a GeoJSON geometry dict through two osr CoordinateTransformations:
+      ct1: src → WGS84
+      ct2: WGS84 → MUTM
+    """
     import numpy as np
-    gtype  = geom_dict["type"]
-    coords = geom_dict["coordinates"]
 
     def tx(ring):
         if not ring:
             return ring
-        arr    = np.array(ring)
-        x1, y1 = t1.transform(arr[:, 0], arr[:, 1])
-        x2, y2 = t2.transform(x1, y1)
-        return list(zip(x2.tolist(), y2.tolist()))
+        arr  = np.array(ring, dtype=np.float64)
+        # TransformPoints expects list of (x, y) or (x, y, z)
+        pts1 = ct1.TransformPoints(arr.tolist())
+        pts2 = ct2.TransformPoints([(p[0], p[1]) for p in pts1])
+        return [(p[0], p[1]) for p in pts2]
+
+    gtype  = geom_dict["type"]
+    coords = geom_dict["coordinates"]
 
     if gtype == "Point":
-        x1, y1 = t1.transform(coords[0], coords[1])
-        x2, y2 = t2.transform(x1, y1)
-        new_coords = [float(x2), float(y2)]
+        p1 = ct1.TransformPoint(coords[0], coords[1])
+        p2 = ct2.TransformPoint(p1[0], p1[1])
+        new_coords = [p2[0], p2[1]]
     elif gtype in ("MultiPoint", "LineString"):
         new_coords = tx(coords)
     elif gtype == "MultiLineString":
@@ -106,12 +150,11 @@ def _transform_geometry(geom_dict: dict, t1, t2) -> dict:
     return {"type": gtype, "coordinates": new_coords}
 
 
-# ── SHAPEFILE CONVERSION (OGR) ────────────────────────────────────────────────
+# ── SHAPEFILE CONVERSION ──────────────────────────────────────────────────────
 
 def convert_shapefile(zip_bytes: bytes, method: str = "7param") -> tuple[bytes, dict]:
     from osgeo import ogr, osr
-    from pyproj import CRS
-    import json
+    import numpy as np
 
     ogr.UseExceptions()
 
@@ -137,46 +180,45 @@ def convert_shapefile(zip_bytes: bytes, method: str = "7param") -> tuple[bytes, 
         if src_srs is None:
             raise ValueError("Shapefile has no CRS (.prj missing). Please add a .prj file.")
 
-        src_crs      = CRS.from_wkt(src_srs.ExportToWkt())
-        src_crs_name = src_crs.name
+        src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+        src_crs_name = src_srs.GetName() or "Unknown"
         total_feats  = src_lyr.GetFeatureCount()
         geom_type    = src_lyr.GetGeomType()
-        ext          = src_lyr.GetExtent()       # (min_x, max_x, min_y, max_y)
+        ext          = src_lyr.GetExtent()   # (min_x, max_x, min_y, max_y)
         left, right, bottom, top = ext
 
         log.info(f"Source CRS: {src_crs_name}  |  Features: {total_feats}")
 
-        zone = _detect_zone_from_bbox(left, bottom, right, top, src_crs)
+        zone = _detect_zone(src_srs, left, bottom, right, top)
         log.info(f"Detected MUTM zone: {zone}")
 
-        t1, t2 = _build_transformers(src_crs, zone, method)
+        wgs84    = _make_wgs84()
+        mutm_srs = _make_mutm(zone, method)
+        ct1      = _build_ct(src_srs, wgs84)    # src → WGS84
+        ct2      = _build_ct(wgs84, mutm_srs)   # WGS84 → MUTM
 
-        # ── Create output shapefile ───────────────────────────────────────────
+        # Output shapefile
         out_name = shp_path.stem + f"_MUTM{zone}"
         out_dir  = tmp / "out"
         out_dir.mkdir()
         out_shp  = out_dir / f"{out_name}.shp"
 
-        driver  = ogr.GetDriverByName("ESRI Shapefile")
-        dst_ds  = driver.CreateDataSource(str(out_shp))
+        driver   = ogr.GetDriverByName("ESRI Shapefile")
+        dst_ds   = driver.CreateDataSource(str(out_shp))
+        dst_lyr  = dst_ds.CreateLayer(out_name, srs=mutm_srs, geom_type=geom_type)
 
-        dst_srs = osr.SpatialReference()
-        dst_srs.ImportFromProj4(_mutm_proj4_str(zone, method))
-
-        dst_lyr  = dst_ds.CreateLayer(out_name, srs=dst_srs, geom_type=geom_type)
         src_defn = src_lyr.GetLayerDefn()
         for i in range(src_defn.GetFieldCount()):
             dst_lyr.CreateField(src_defn.GetFieldDefn(i))
         dst_defn = dst_lyr.GetLayerDefn()
 
-        # ── Transform features ────────────────────────────────────────────────
         src_lyr.ResetReading()
         for feat in src_lyr:
             geom = feat.GetGeometryRef()
             if geom is None:
                 continue
             geom_dict     = json.loads(geom.ExportToJson())
-            new_geom_dict = _transform_geometry(geom_dict, t1, t2)
+            new_geom_dict = _transform_geometry(geom_dict, ct1, ct2)
             new_geom      = ogr.CreateGeometryFromJson(json.dumps(new_geom_dict))
 
             new_feat = ogr.Feature(dst_defn)
@@ -205,7 +247,7 @@ def convert_shapefile(zip_bytes: bytes, method: str = "7param") -> tuple[bytes, 
         }
 
 
-# ── RASTER CONVERSION (GDAL) ──────────────────────────────────────────────────
+# ── RASTER CONVERSION ─────────────────────────────────────────────────────────
 
 def convert_raster(
     file_bytes: bytes,
@@ -213,7 +255,6 @@ def convert_raster(
     method: str = "7param",
 ) -> tuple[bytes, dict]:
     from osgeo import gdal, osr
-    from pyproj import CRS, Transformer
     from scipy.ndimage import map_coordinates
     import numpy as np
 
@@ -234,12 +275,8 @@ def convert_raster(
         if not src_wkt:
             raise ValueError("Raster has no CRS metadata. Cannot reproject.")
 
-        src_crs = CRS.from_wkt(src_wkt)
-        if src_crs.is_compound:
-            src_crs = src_crs.sub_crs_list[0]
-            log.info(f"Compound CRS — using horizontal: {src_crs.name}")
-
-        src_crs_name = src_crs.name
+        src_srs = _make_src_srs(src_wkt)
+        src_crs_name = src_srs.GetName() or "Unknown"
         log.info(f"Source raster CRS: {src_crs_name}")
 
         gt         = src_ds.GetGeoTransform()
@@ -250,29 +287,35 @@ def convert_raster(
         left   = gt[0]
         top_y  = gt[3]
         right  = left  + gt[1] * src_width
-        bottom = top_y + gt[5] * src_height   # gt[5] is negative
+        bottom = top_y + gt[5] * src_height
 
-        zone = _detect_zone_from_bbox(left, bottom, right, top_y, src_crs)
+        zone = _detect_zone(src_srs, left, bottom, right, top_y)
         log.info(f"Detected MUTM zone: {zone}")
 
-        t1, t2 = _build_transformers(src_crs, zone, method)
+        wgs84    = _make_wgs84()
+        mutm_srs = _make_mutm(zone, method)
 
-        mutm_crs = CRS.from_proj4(_mutm_proj4_str(zone, method))
-        wgs84    = CRS.from_epsg(4326)
-        t2_inv   = Transformer.from_crs(mutm_crs, wgs84,    always_xy=True)
-        t1_inv   = Transformer.from_crs(wgs84,    src_crs,  always_xy=True)
+        ct1     = _build_ct(src_srs, wgs84)     # src → WGS84
+        ct2     = _build_ct(wgs84, mutm_srs)    # WGS84 → MUTM
+        ct2_inv = _build_ct(mutm_srs, wgs84)    # MUTM → WGS84
+        ct1_inv = _build_ct(wgs84, src_srs)     # WGS84 → src
 
-        corners_src_x = [left,  right, left,  right]
-        corners_src_y = [bottom, bottom, top_y, top_y]
-        cx1, cy1 = t1.transform(corners_src_x, corners_src_y)
-        cx2, cy2 = t2.transform(cx1, cy1)
+        # Output MUTM bounding box
+        corners = [
+            (left, bottom), (right, bottom),
+            (left, top_y),  (right, top_y),
+        ]
+        mutm_corners = []
+        for x, y in corners:
+            wgs = ct1.TransformPoint(x, y)
+            mut = ct2.TransformPoint(wgs[0], wgs[1])
+            mutm_corners.append(mut)
 
-        out_left   = float(np.min(cx2))
-        out_right  = float(np.max(cx2))
-        out_bottom = float(np.min(cy2))
-        out_top    = float(np.max(cy2))
+        out_left   = min(p[0] for p in mutm_corners)
+        out_right  = max(p[0] for p in mutm_corners)
+        out_bottom = min(p[1] for p in mutm_corners)
+        out_top    = max(p[1] for p in mutm_corners)
 
-        # Preserve exact pixel size
         src_res_x = abs(gt[1])
         src_res_y = abs(gt[5])
         out_width  = max(1, int(round((out_right - out_left)   / src_res_x)))
@@ -291,7 +334,6 @@ def convert_raster(
         dtype_gdal = band1.DataType
         src_nodata = band1.GetNoDataValue()
 
-        # Map GDAL dtype to numpy dtype
         gdal_to_np = {
             gdal.GDT_Byte:    np.uint8,
             gdal.GDT_UInt16:  np.uint16,
@@ -316,11 +358,9 @@ def convert_raster(
             options=["COMPRESS=LZW", "TILED=YES"],
         )
         dst_ds.SetGeoTransform(out_gt)
-        dst_srs = osr.SpatialReference()
-        dst_srs.ImportFromProj4(_mutm_proj4_str(zone, method))
-        dst_ds.SetProjection(dst_srs.ExportToWkt())
+        dst_ds.SetProjection(mutm_srs.ExportToWkt())
 
-        cols       = np.arange(out_width, dtype=np.float64)
+        cols       = np.arange(out_width,  dtype=np.float64)
         mutm_x_row = out_left + (cols + 0.5) * src_res_x
 
         for band_idx in range(1, band_count + 1):
@@ -340,8 +380,13 @@ def convert_raster(
                 mutm_x_grid = np.broadcast_to(mutm_x_row, (strip_h, out_width)).copy()
                 mutm_y_grid = mutm_y_strip[:, np.newaxis] * np.ones((1, out_width))
 
-                wgs_x, wgs_y = t2_inv.transform(mutm_x_grid.ravel(), mutm_y_grid.ravel())
-                src_x, src_y = t1_inv.transform(wgs_x, wgs_y)
+                # Back-project: MUTM → WGS84 → src
+                pts_mutm = list(zip(mutm_x_grid.ravel(), mutm_y_grid.ravel()))
+                pts_wgs  = ct2_inv.TransformPoints(pts_mutm)
+                pts_src  = ct1_inv.TransformPoints([(p[0], p[1]) for p in pts_wgs])
+
+                src_x = np.array([p[0] for p in pts_src])
+                src_y = np.array([p[1] for p in pts_src])
 
                 s_col = ((src_x - left)  / (right - left)   * src_width  - 0.5).reshape(strip_h, out_width)
                 s_row = ((top_y - src_y) / (top_y - bottom) * src_height - 0.5).reshape(strip_h, out_width)
@@ -385,7 +430,7 @@ def convert_raster(
                     xoff=0, yoff=strip_start,
                 )
 
-                del mutm_x_grid, mutm_y_grid, wgs_x, wgs_y
+                del mutm_x_grid, mutm_y_grid, pts_mutm, pts_wgs, pts_src
                 del src_x, src_y, s_col, s_row, s_row_local
                 del strip_data, outside_mask, invalid
 
